@@ -1,0 +1,551 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Amazon RDS Graviton Benchmark Stack.
+  Deploys a single RDS instance with TLS enforced and a Graviton EC2 client
+  pre-configured with Sysbench. Run /opt/run-benchmark.sh after deployment.
+  Deploy multiple stacks in parallel to compare generations side-by-side.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Database Configuration
+        Parameters:
+          - DatabaseEngine
+          - InstanceClass
+      - Label:
+          default: Benchmark Configuration (optional)
+        Parameters:
+          - SysbenchTables
+          - SysbenchTableSize
+          - SysbenchThreads
+          - SysbenchDuration
+    ParameterLabels:
+      DatabaseEngine:
+        default: Database Engine
+      InstanceClass:
+        default: RDS Instance Class
+      SysbenchTables:
+        default: Number of Sysbench Tables
+      SysbenchTableSize:
+        default: Rows per Table
+      SysbenchThreads:
+        default: Concurrent Threads
+      SysbenchDuration:
+        default: Test Duration (seconds)
+
+Parameters:
+  DatabaseEngine:
+    Type: String
+    Default: postgres
+    AllowedValues:
+      - postgres
+      - mysql
+      - mariadb
+    Description: Database engine to benchmark.
+
+  InstanceClass:
+    Type: String
+    Default: db.m8g.xlarge
+    AllowedValues:
+      - db.m6g.xlarge
+      - db.m7g.xlarge
+      - db.m8g.xlarge
+      - db.m9g.xlarge
+      - db.m6g.2xlarge
+      - db.m7g.2xlarge
+      - db.m8g.2xlarge
+      - db.m9g.2xlarge
+      - db.m6g.4xlarge
+      - db.m7g.4xlarge
+      - db.m8g.4xlarge
+      - db.m9g.4xlarge
+    Description: >
+      RDS instance class. Select the Graviton generation and size to benchmark.
+
+  SysbenchTables:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 64
+    Description: Number of Sysbench tables.
+
+  SysbenchTableSize:
+    Type: Number
+    Default: 2000000
+    MinValue: 10000
+    Description: Number of rows per Sysbench table.
+
+  SysbenchThreads:
+    Type: Number
+    Default: 100
+    MinValue: 1
+    MaxValue: 512
+    Description: Number of concurrent Sysbench threads.
+
+  SysbenchDuration:
+    Type: Number
+    Default: 1800
+    MinValue: 60
+    Description: Benchmark duration in seconds (default 30 minutes).
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+    Description: Latest Amazon Linux 2023 ARM64 AMI. Do not modify.
+
+Mappings:
+  EngineConfig:
+    postgres:
+      Engine: postgres
+      Version: '17.10'
+      Port: '5432'
+      Family: postgres17
+    mysql:
+      Engine: mysql
+      Version: '8.4.9'
+      Port: '3306'
+      Family: mysql8.4
+    mariadb:
+      Engine: mariadb
+      Version: '11.4.12'
+      Port: '3306'
+      Family: mariadb11.4
+
+Conditions:
+  IsPostgres: !Equals [!Ref DatabaseEngine, postgres]
+  IsNotPostgres: !Not [!Equals [!Ref DatabaseEngine, postgres]]
+
+Resources:
+  # ===================== NETWORKING =====================
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-vpc'
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-private-a'
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-private-b'
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-public'
+
+  IGW:
+    Type: AWS::EC2::InternetGateway
+
+  IGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref IGW
+
+  NatEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    DependsOn: IGWAttachment
+    Properties:
+      AllocationId: !GetAtt NatEIP.AllocationId
+      SubnetId: !Ref PublicSubnet
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IGWAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IGW
+
+  PublicSubnetRTAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetARTAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetBRTAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTable
+
+  # ===================== SECURITY GROUPS =====================
+  EC2SG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Sysbench benchmark client
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.0.0.0/16
+
+  RDSSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: RDS benchmark instance
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !FindInMap [EngineConfig, !Ref DatabaseEngine, Port]
+          ToPort: !FindInMap [EngineConfig, !Ref DatabaseEngine, Port]
+          SourceSecurityGroupId: !Ref EC2SG
+
+  VPCEndpointSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: VPC Endpoints
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.0.0.0/16
+
+  # ===================== VPC ENDPOINTS =====================
+  SSMEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ssm'
+      VpcEndpointType: Interface
+      SubnetIds: [!Ref PrivateSubnetA]
+      SecurityGroupIds: [!Ref VPCEndpointSG]
+      PrivateDnsEnabled: true
+
+  SSMMessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ssmmessages'
+      VpcEndpointType: Interface
+      SubnetIds: [!Ref PrivateSubnetA]
+      SecurityGroupIds: [!Ref VPCEndpointSG]
+      PrivateDnsEnabled: true
+
+  EC2MessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ec2messages'
+      VpcEndpointType: Interface
+      SubnetIds: [!Ref PrivateSubnetA]
+      SecurityGroupIds: [!Ref VPCEndpointSG]
+      PrivateDnsEnabled: true
+
+  SecretsManagerEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.secretsmanager'
+      VpcEndpointType: Interface
+      SubnetIds: [!Ref PrivateSubnetA]
+      SecurityGroupIds: [!Ref VPCEndpointSG]
+      PrivateDnsEnabled: true
+
+  # ===================== RDS =====================
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Benchmark DB subnet group
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+
+  PostgresParamGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Condition: IsPostgres
+    Properties:
+      Family: postgres17
+      Description: Benchmark - TLS enforced
+      Parameters:
+        rds.force_ssl: '1'
+
+  MySQLMariaDBParamGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Condition: IsNotPostgres
+    Properties:
+      Family: !FindInMap [EngineConfig, !Ref DatabaseEngine, Family]
+      Description: Benchmark - TLS enforced
+      Parameters:
+        require_secure_transport: '1'
+
+  RDSSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${AWS::StackName}-db-credentials'
+      Description: RDS benchmark credentials
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "benchadmin"}'
+        GenerateStringKey: password
+        PasswordLength: 24
+        ExcludePunctuation: true
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    DependsOn: PrivateRoute
+    Properties:
+      DBInstanceIdentifier: !Sub '${AWS::StackName}'
+      DBInstanceClass: !Ref InstanceClass
+      Engine: !FindInMap [EngineConfig, !Ref DatabaseEngine, Engine]
+      EngineVersion: !FindInMap [EngineConfig, !Ref DatabaseEngine, Version]
+      MasterUsername: !Sub '{{resolve:secretsmanager:${RDSSecret}:SecretString:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${RDSSecret}:SecretString:password}}'
+      AllocatedStorage: 200
+      StorageType: io2
+      Iops: 10000
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref RDSSG
+      DBParameterGroupName: !If
+        - IsPostgres
+        - !Ref PostgresParamGroup
+        - !Ref MySQLMariaDBParamGroup
+      DBName: sbtest
+      Port: !FindInMap [EngineConfig, !Ref DatabaseEngine, Port]
+      PubliclyAccessible: false
+      MultiAZ: false
+      DeletionProtection: false
+      BackupRetentionPeriod: 0
+      CACertificateIdentifier: rds-ca-rsa2048-g1
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-${InstanceClass}'
+        - Key: Purpose
+          Value: GravitonBenchmark
+
+  # ===================== EC2 CLIENT =====================
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-ec2-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: SecretsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref RDSSecret
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
+
+  BenchmarkEC2:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - RDSInstance
+      - SecretsManagerEndpoint
+    Properties:
+      InstanceType: m7g.4xlarge
+      ImageId: !Ref LatestAmiId
+      SubnetId: !Ref PrivateSubnetA
+      SecurityGroupIds:
+        - !Ref EC2SG
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-client'
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -eo pipefail
+            exec > /var/log/benchmark-setup.log 2>&1
+            echo "=== Setup Started: $(date) ==="
+
+            # --- Install ONLY what Sysbench needs to build and run ---
+            dnf install -y gcc make automake libtool git jq \
+              openssl-devel zlib-devel \
+              postgresql16-server-devel postgresql16 \
+              mariadb105-devel mariadb105
+
+            # --- Build Sysbench from source ---
+            cd /opt
+            git clone --depth 1 https://github.com/akopytov/sysbench.git
+            cd sysbench
+            ./autogen.sh
+            ./configure \
+              --with-pgsql \
+              --with-pgsql-includes=/usr/include \
+              --with-pgsql-libs=/usr/lib64 \
+              --with-mysql
+            make -j$(nproc)
+            make install
+            ln -sf /usr/local/bin/sysbench /usr/bin/sysbench
+
+            # --- Retrieve credentials from Secrets Manager ---
+            DB_PASS=$(aws secretsmanager get-secret-value \
+              --secret-id "${RDSSecret}" --region "${AWS::Region}" \
+              --query SecretString --output text | jq -r '.password')
+
+            # --- Write benchmark environment ---
+            mkdir -p /opt/results
+            chmod 777 /opt/results
+            cat > /opt/bench-env.sh << ENVEOF
+            export DB_ENGINE="${DBEngine}"
+            export DB_HOST="${RDSEndpointAddr}"
+            export DB_PORT="${DBPort}"
+            export INST_CLASS="${DBInstanceClass}"
+            export TABLES=${SysbenchTables}
+            export TABLE_SIZE=${SysbenchTableSize}
+            export THREADS=${SysbenchThreads}
+            export DURATION=${SysbenchDuration}
+            ENVEOF
+
+            # Append driver args (built dynamically to avoid !Sub conflicts)
+            if [[ "${DBEngine}" == "postgres" ]]; then
+              echo "export DRIVER_ARGS=\"--db-driver=pgsql --pgsql-host=${RDSEndpointAddr} --pgsql-port=${DBPort} --pgsql-user=benchadmin --pgsql-password=$DB_PASS --pgsql-db=sbtest --pgsql-sslmode=require\"" >> /opt/bench-env.sh
+            else
+              echo "export DRIVER_ARGS=\"--db-driver=mysql --mysql-host=${RDSEndpointAddr} --mysql-port=${DBPort} --mysql-user=benchadmin --mysql-password=$DB_PASS --mysql-db=sbtest --mysql-ssl=on\"" >> /opt/bench-env.sh
+            fi
+
+            # --- Create benchmark script ---
+            cat > /opt/run-benchmark.sh << 'SCRIPT'
+            #!/bin/bash
+            set -eo pipefail
+            source /opt/bench-env.sh
+            RESULT_FILE="/opt/results/$DB_ENGINE-$INST_CLASS-$(date +%Y%m%d-%H%M%S).log"
+            mkdir -p /opt/results
+
+            echo "============================================================"
+            echo " Amazon RDS Graviton Benchmark"
+            echo " Engine: $DB_ENGINE | Instance: $INST_CLASS"
+            echo " Tables: $TABLES x $TABLE_SIZE | Threads: $THREADS"
+            echo " Duration: ${!DURATION}s | TLS: Enforced"
+            echo " Results: $RESULT_FILE"
+            echo "============================================================"
+            echo ""
+
+            echo ">>> PREPARE..." | tee "$RESULT_FILE"
+            sysbench /usr/local/share/sysbench/oltp_read_write.lua \
+              $DRIVER_ARGS --tables=$TABLES --table-size=$TABLE_SIZE \
+              prepare 2>&1 | tee -a "$RESULT_FILE"
+            echo "" | tee -a "$RESULT_FILE"
+
+            echo ">>> RUN (${!DURATION}s)..." | tee -a "$RESULT_FILE"
+            sysbench /usr/local/share/sysbench/oltp_read_write.lua \
+              $DRIVER_ARGS --tables=$TABLES --table-size=$TABLE_SIZE \
+              --threads=$THREADS --time=$DURATION --report-interval=10 \
+              run 2>&1 | tee -a "$RESULT_FILE"
+            echo "" | tee -a "$RESULT_FILE"
+
+            echo ">>> CLEANUP..." | tee -a "$RESULT_FILE"
+            sysbench /usr/local/share/sysbench/oltp_read_write.lua \
+              $DRIVER_ARGS --tables=$TABLES --table-size=$TABLE_SIZE \
+              cleanup 2>&1 | tee -a "$RESULT_FILE"
+
+            echo "" | tee -a "$RESULT_FILE"
+            echo "BENCHMARK COMPLETE. Results: $RESULT_FILE" | tee -a "$RESULT_FILE"
+            SCRIPT
+            chmod +x /opt/run-benchmark.sh
+            chmod 644 /opt/bench-env.sh
+
+            echo "=== Setup Complete: $(date) ==="
+            echo "Run: /opt/run-benchmark.sh"
+          - RDSEndpointAddr: !GetAtt RDSInstance.Endpoint.Address
+            DBPort: !FindInMap [EngineConfig, !Ref DatabaseEngine, Port]
+            DBEngine: !Ref DatabaseEngine
+            DBInstanceClass: !Ref InstanceClass
+
+Outputs:
+  RDSEndpoint:
+    Description: RDS instance endpoint
+    Value: !GetAtt RDSInstance.Endpoint.Address
+
+  RDSPort:
+    Description: Database port
+    Value: !FindInMap [EngineConfig, !Ref DatabaseEngine, Port]
+
+  InstanceClassTested:
+    Description: RDS instance class under test
+    Value: !Ref InstanceClass
+
+  DatabaseEngine:
+    Description: Database engine
+    Value: !Ref DatabaseEngine
+
+  SessionManagerURL:
+    Description: Connect to EC2 via Session Manager
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/systems-manager/session-manager/${BenchmarkEC2}?region=${AWS::Region}'
+
+  BenchmarkCommand:
+    Description: Run this on the EC2 to start the benchmark
+    Value: /opt/run-benchmark.sh
+
+  ResultsDirectory:
+    Description: Results saved here on EC2
+    Value: /opt/results/
