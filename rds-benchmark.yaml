@@ -1,9 +1,10 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  Amazon RDS Graviton Benchmark Stack.
-  Deploys a single RDS instance with TLS enforced and a Graviton EC2 client
-  pre-configured with Sysbench. Run /opt/run-benchmark.sh after deployment.
-  Deploy multiple stacks in parallel to compare generations side-by-side.
+  Amazon RDS Benchmark Stack.
+  Deploys a single RDS instance with TLS enforced and an EC2 client
+  pre-configured with Sysbench. Supports Graviton, Intel, and AMD instance families.
+  Run /opt/run-benchmark.sh after deployment.
+  Deploy multiple stacks in parallel to compare instances side-by-side.
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -48,6 +49,7 @@ Parameters:
     Type: String
     Default: db.m8g.xlarge
     AllowedValues:
+      # --- Graviton (Arm) ---
       - db.m6g.xlarge
       - db.m7g.xlarge
       - db.m8g.xlarge
@@ -60,8 +62,30 @@ Parameters:
       - db.m7g.4xlarge
       - db.m8g.4xlarge
       - db.m9g.4xlarge
+      # --- Intel (x86) --- uncomment when needed
+      # - db.m5.xlarge
+      # - db.m6i.xlarge
+      # - db.m7i.xlarge
+      # - db.m5.2xlarge
+      # - db.m6i.2xlarge
+      # - db.m7i.2xlarge
+      # - db.m5.4xlarge
+      # - db.m6i.4xlarge
+      # - db.m7i.4xlarge
+      # --- AMD (x86) --- uncomment when needed
+      # - db.m6a.xlarge
+      # - db.m7a.xlarge
+      # - db.m6a.2xlarge
+      # - db.m7a.2xlarge
+      # - db.m6a.4xlarge
+      # - db.m7a.4xlarge
+      # --- Future Graviton --- uncomment when available
+      # - db.m10g.xlarge
+      # - db.m10g.2xlarge
+      # - db.m10g.4xlarge
     Description: >
-      RDS instance class. Select the Graviton generation and size to benchmark.
+      RDS instance class to benchmark. Supports Graviton (m*g), Intel (m*i),
+      and AMD (m*a) families. Uncomment additional entries as needed.
 
   SysbenchTables:
     Type: Number
@@ -367,9 +391,11 @@ Resources:
         - Key: Name
           Value: !Sub '${AWS::StackName}-${InstanceClass}'
         - Key: Purpose
-          Value: GravitonBenchmark
+          Value: RDSBenchmark
 
   # ===================== EC2 CLIENT =====================
+  # Client instance is always Graviton (Arm) regardless of RDS instance under test.
+  # The client generates load - its processor does not affect RDS benchmark results.
   EC2Role:
     Type: AWS::IAM::Role
     Properties:
@@ -482,7 +508,7 @@ Resources:
             mkdir -p /opt/results
 
             echo "============================================================"
-            echo " Amazon RDS Graviton Benchmark"
+            echo " Amazon RDS Benchmark"
             echo " Engine: $DB_ENGINE | Instance: $INST_CLASS"
             echo " Tables: $TABLES x $TABLE_SIZE | Threads: $THREADS"
             echo " Duration: ${!DURATION}s | TLS: Enforced"
