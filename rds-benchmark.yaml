@@ -253,11 +253,7 @@ Resources:
     Properties:
       GroupDescription: Sysbench benchmark client
       VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          CidrIp: 10.0.0.0/16
+      # No inbound rules needed - EC2 only initiates outbound connections
 
   RDSSG:
     Type: AWS::EC2::SecurityGroup
@@ -373,6 +369,7 @@ Resources:
       AllocatedStorage: 200
       StorageType: io2
       Iops: 10000
+      StorageEncrypted: true
       DBSubnetGroupName: !Ref DBSubnetGroup
       VPCSecurityGroups:
         - !Ref RDSSG
@@ -383,9 +380,9 @@ Resources:
       DBName: sbtest
       Port: !FindInMap [EngineConfig, !Ref DatabaseEngine, Port]
       PubliclyAccessible: false
-      MultiAZ: false
-      DeletionProtection: false
-      BackupRetentionPeriod: 0
+      MultiAZ: false                  # BENCHMARK ONLY - enable for production workloads
+      DeletionProtection: false       # BENCHMARK ONLY - enable for production workloads
+      BackupRetentionPeriod: 0        # BENCHMARK ONLY - set to 7+ for production workloads
       CACertificateIdentifier: rds-ca-rsa2048-g1
       Tags:
         - Key: Name
@@ -399,7 +396,6 @@ Resources:
   EC2Role:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${AWS::StackName}-ec2-role'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -437,11 +433,15 @@ Resources:
       SecurityGroupIds:
         - !Ref EC2SG
       IamInstanceProfile: !Ref EC2InstanceProfile
+      MetadataOptions:
+        HttpTokens: required
+        HttpEndpoint: enabled
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
           Ebs:
             VolumeSize: 30
             VolumeType: gp3
+            Encrypted: true
       Tags:
         - Key: Name
           Value: !Sub '${AWS::StackName}-client'
@@ -460,9 +460,15 @@ Resources:
               mariadb105-devel mariadb105
 
             # --- Build Sysbench from source ---
+            # Sysbench master, pinned to SHA for reproducibility and supply-chain safety (P0-2).
+            # Cannot use 1.0.20 release (ebf1c90, April 2020) — it predates OpenSSL 3.x and
+            # lacks CA certificate auto-discovery needed for TLS on Amazon Linux 2023.
+            # The --mysql-ssl=on flag fails with "No such file or directory" on AL2023 + libmariadb.
+            # Pinned commit: 3ceba0b (2026-07-30, master HEAD at time of validation)
             cd /opt
-            git clone --depth 1 https://github.com/akopytov/sysbench.git
+            git clone https://github.com/akopytov/sysbench.git
             cd sysbench
+            git checkout 3ceba0b1e115f8c50d1d045a4574d8ed643bd497
             ./autogen.sh
             ./configure \
               --with-pgsql \
@@ -473,14 +479,10 @@ Resources:
             make install
             ln -sf /usr/local/bin/sysbench /usr/bin/sysbench
 
-            # --- Retrieve credentials from Secrets Manager ---
-            DB_PASS=$(aws secretsmanager get-secret-value \
-              --secret-id "${RDSSecret}" --region "${AWS::Region}" \
-              --query SecretString --output text | jq -r '.password')
-
-            # --- Write benchmark environment ---
+            # --- Write benchmark environment (NO credentials on disk) ---
             mkdir -p /opt/results
-            chmod 777 /opt/results
+            chown ssm-user:ssm-user /opt/results 2>/dev/null || true
+            chmod 755 /opt/results
             cat > /opt/bench-env.sh << ENVEOF
             export DB_ENGINE="${DBEngine}"
             export DB_HOST="${RDSEndpointAddr}"
@@ -490,22 +492,33 @@ Resources:
             export TABLE_SIZE=${SysbenchTableSize}
             export THREADS=${SysbenchThreads}
             export DURATION=${SysbenchDuration}
+            export SECRET_ARN="${RDSSecret}"
+            export AWS_DEFAULT_REGION="${AWS::Region}"
             ENVEOF
 
-            # Append driver args (built dynamically to avoid !Sub conflicts)
-            if [[ "${DBEngine}" == "postgres" ]]; then
-              echo "export DRIVER_ARGS=\"--db-driver=pgsql --pgsql-host=${RDSEndpointAddr} --pgsql-port=${DBPort} --pgsql-user=benchadmin --pgsql-password=$DB_PASS --pgsql-db=sbtest --pgsql-sslmode=require\"" >> /opt/bench-env.sh
-            else
-              echo "export DRIVER_ARGS=\"--db-driver=mysql --mysql-host=${RDSEndpointAddr} --mysql-port=${DBPort} --mysql-user=benchadmin --mysql-password=$DB_PASS --mysql-db=sbtest --mysql-ssl=on\"" >> /opt/bench-env.sh
-            fi
-
-            # --- Create benchmark script ---
+            # --- Create benchmark script (fetches password at runtime) ---
             cat > /opt/run-benchmark.sh << 'SCRIPT'
             #!/bin/bash
             set -eo pipefail
             source /opt/bench-env.sh
+
+            # --- Ensure results directory is writable ---
+            sudo chown "$(whoami)" /opt/results 2>/dev/null || true
+
+            # --- Retrieve credentials at runtime (never persisted to disk) ---
+            DB_PASS=$(aws secretsmanager get-secret-value \
+              --secret-id "$SECRET_ARN" --region "$AWS_DEFAULT_REGION" \
+              --query SecretString --output text | jq -r '.password')
+
+            # --- Build driver args with password in memory only ---
+            if [[ "$DB_ENGINE" == "postgres" ]]; then
+              export PGSSLMODE=require
+              DRIVER_ARGS="--db-driver=pgsql --pgsql-host=$DB_HOST --pgsql-port=$DB_PORT --pgsql-user=benchadmin --pgsql-password=$DB_PASS --pgsql-db=sbtest"
+            else
+              DRIVER_ARGS="--db-driver=mysql --mysql-host=$DB_HOST --mysql-port=$DB_PORT --mysql-user=benchadmin --mysql-password=$DB_PASS --mysql-db=sbtest --mysql-ssl=on"
+            fi
+
             RESULT_FILE="/opt/results/$DB_ENGINE-$INST_CLASS-$(date +%Y%m%d-%H%M%S).log"
-            mkdir -p /opt/results
 
             echo "============================================================"
             echo " Amazon RDS Benchmark"

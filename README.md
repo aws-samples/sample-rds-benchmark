@@ -14,7 +14,7 @@ To add new instance families: uncomment entries in the `AllowedValues` list in t
 
 ## Related Blog Posts
 
-- [Boosting Amazon RDS with AWS Graviton5: Benchmarks](https://aws.amazon.com/blogs/database/) (2026) <!-- TODO: Update URL -->
+- [Boosting Amazon RDS with AWS Graviton5: Benchmarks](https://aws.amazon.com/blogs/database/) (2026)
 - [Leveling up Amazon RDS with AWS Graviton4: Benchmarks](https://aws.amazon.com/blogs/database/leveling-up-amazon-rds-with-aws-graviton4-benchmarks/) (2025)
 
 ## Architecture
@@ -137,6 +137,20 @@ No template restructuring needed.
 - TLS enforced on all database connections
 - Credentials stored in Secrets Manager (never hardcoded)
 - Least-privilege IAM roles
+
+## Cost
+
+**Warning:** This stack costs approximately **$2.17/hour ($52/day)** while running. Delete the stack immediately after collecting benchmark results.
+
+| Resource | Hourly Cost (us-east-1) |
+|----------|------------------------|
+| RDS instance (db.m8g.xlarge) | $0.58 |
+| io2 200 GiB + 10,000 IOPS | $0.92 |
+| EC2 m7g.4xlarge | $0.58 |
+| NAT Gateway | $0.045 |
+| VPC Endpoints (x4) | $0.04 |
+
+Costs vary by instance class. Run `aws cloudformation delete-stack` as soon as you have your results.
 
 ## License
 
