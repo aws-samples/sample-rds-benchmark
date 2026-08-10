@@ -510,13 +510,16 @@ Resources:
               --secret-id "$SECRET_ARN" --region "$AWS_DEFAULT_REGION" \
               --query SecretString --output text | jq -r '.password')
 
-            # --- Build driver args with password in memory only ---
+            # --- Pass password via environment variable (not visible in /proc or ps) ---
             if [[ "$DB_ENGINE" == "postgres" ]]; then
               export PGSSLMODE=require
-              DRIVER_ARGS="--db-driver=pgsql --pgsql-host=$DB_HOST --pgsql-port=$DB_PORT --pgsql-user=benchadmin --pgsql-password=$DB_PASS --pgsql-db=sbtest"
+              export PGPASSWORD="$DB_PASS"
+              DRIVER_ARGS="--db-driver=pgsql --pgsql-host=$DB_HOST --pgsql-port=$DB_PORT --pgsql-user=benchadmin --pgsql-db=sbtest"
             else
-              DRIVER_ARGS="--db-driver=mysql --mysql-host=$DB_HOST --mysql-port=$DB_PORT --mysql-user=benchadmin --mysql-password=$DB_PASS --mysql-db=sbtest --mysql-ssl=on"
+              export MYSQL_PWD="$DB_PASS"
+              DRIVER_ARGS="--db-driver=mysql --mysql-host=$DB_HOST --mysql-port=$DB_PORT --mysql-user=benchadmin --mysql-db=sbtest --mysql-ssl=on"
             fi
+            unset DB_PASS
 
             RESULT_FILE="/opt/results/$DB_ENGINE-$INST_CLASS-$(date +%Y%m%d-%H%M%S).log"
 
