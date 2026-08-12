@@ -21,6 +21,10 @@ Metadata:
           - SysbenchTableSize
           - SysbenchThreads
           - SysbenchDuration
+      - Label:
+          default: Network Configuration (optional)
+        Parameters:
+          - VpcCidr
     ParameterLabels:
       DatabaseEngine:
         default: Database Engine
@@ -34,6 +38,8 @@ Metadata:
         default: Concurrent Threads
       SysbenchDuration:
         default: Test Duration (seconds)
+      VpcCidr:
+        default: VPC CIDR Block
 
 Parameters:
   DatabaseEngine:
@@ -118,6 +124,15 @@ Parameters:
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
     Description: Latest Amazon Linux 2023 ARM64 AMI. Do not modify.
 
+  VpcCidr:
+    Type: String
+    Default: 10.192.0.0/16
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/16$'
+    ConstraintDescription: Must be a valid /16 CIDR block (e.g., 10.192.0.0/16).
+    Description: >
+      VPC CIDR block for the benchmark stack. Change if the default conflicts
+      with an existing VPC in your account.
+
 Mappings:
   EngineConfig:
     postgres:
@@ -145,7 +160,7 @@ Resources:
   VPC:
     Type: AWS::EC2::VPC
     Properties:
-      CidrBlock: 10.0.0.0/16
+      CidrBlock: !Ref VpcCidr
       EnableDnsHostnames: true
       EnableDnsSupport: true
       Tags:
@@ -156,7 +171,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      CidrBlock: 10.0.1.0/24
+      CidrBlock: !Select [0, !Cidr [!Ref VpcCidr, 4, 8]]
       AvailabilityZone: !Select [0, !GetAZs '']
       Tags:
         - Key: Name
@@ -166,7 +181,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      CidrBlock: 10.0.3.0/24
+      CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 4, 8]]
       AvailabilityZone: !Select [1, !GetAZs '']
       Tags:
         - Key: Name
@@ -176,7 +191,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      CidrBlock: 10.0.2.0/24
+      CidrBlock: !Select [2, !Cidr [!Ref VpcCidr, 4, 8]]
       AvailabilityZone: !Select [0, !GetAZs '']
       MapPublicIpOnLaunch: true
       Tags:
@@ -275,7 +290,7 @@ Resources:
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
-          CidrIp: 10.0.0.0/16
+          CidrIp: !Ref VpcCidr
 
   # ===================== VPC ENDPOINTS =====================
   SSMEndpoint:
