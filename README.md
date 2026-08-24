@@ -7,10 +7,8 @@ CloudFormation template for benchmarking Amazon RDS instance classes using Sysbe
 | Family | Processor | Generations | Status |
 |--------|-----------|-------------|--------|
 | M*g | AWS Graviton (Arm) | M6g, M7g, M8g, M9g | Active |
-| M*i | Intel (x86) | M5, M6i, M7i | Planned |
-| M*a | AMD (x86) | M6a, M7a | Planned |
 
-To add new instance families: uncomment entries in the `AllowedValues` list in the template's `InstanceClass` parameter.
+This template benchmarks Amazon RDS on AWS Graviton (Arm) instances.
 
 ## Related Blog Posts
 
@@ -119,14 +117,13 @@ The script retrieves database credentials from Secrets Manager automatically and
 | Reporting | Every 10 seconds |
 | TLS | Enforced (all engines) |
 
-## Extending for New Processors
+## Extending to New Graviton Generations
 
-When a new instance family becomes available on RDS:
+When a new Graviton generation becomes available on RDS:
 
 1. Add the instance class to `AllowedValues` in the template
-2. If x86: update `LatestAmiId` default or add a condition for x86 AMI
-3. Deploy a new stack with the new instance class
-4. Compare results
+2. Deploy a new stack with the new instance class
+3. Compare results
 
 No template restructuring needed.
 

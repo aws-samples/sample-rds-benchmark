@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Amazon RDS Benchmark Stack.
   Deploys a single RDS instance with TLS enforced and an EC2 client
-  pre-configured with Sysbench. Supports Graviton, Intel, and AMD instance families.
+  pre-configured with Sysbench on AWS Graviton instances.
   Run /opt/run-benchmark.sh after deployment.
   Deploy multiple stacks in parallel to compare instances side-by-side.
 
@@ -68,30 +68,8 @@ Parameters:
       - db.m7g.4xlarge
       - db.m8g.4xlarge
       - db.m9g.4xlarge
-      # --- Intel (x86) --- uncomment when needed
-      # - db.m5.xlarge
-      # - db.m6i.xlarge
-      # - db.m7i.xlarge
-      # - db.m5.2xlarge
-      # - db.m6i.2xlarge
-      # - db.m7i.2xlarge
-      # - db.m5.4xlarge
-      # - db.m6i.4xlarge
-      # - db.m7i.4xlarge
-      # --- AMD (x86) --- uncomment when needed
-      # - db.m6a.xlarge
-      # - db.m7a.xlarge
-      # - db.m6a.2xlarge
-      # - db.m7a.2xlarge
-      # - db.m6a.4xlarge
-      # - db.m7a.4xlarge
-      # --- Future Graviton --- uncomment when available
-      # - db.m10g.xlarge
-      # - db.m10g.2xlarge
-      # - db.m10g.4xlarge
     Description: >
-      RDS instance class to benchmark. Supports Graviton (m*g), Intel (m*i),
-      and AMD (m*a) families. Uncomment additional entries as needed.
+      RDS instance class to benchmark. Supports AWS Graviton (m*g) families.
 
   SysbenchTables:
     Type: Number
