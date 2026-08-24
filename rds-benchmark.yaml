@@ -53,7 +53,7 @@ Parameters:
 
   InstanceClass:
     Type: String
-    Default: db.m8g.xlarge
+    Default: db.m9g.xlarge
     AllowedValues:
       # --- Graviton (Arm) ---
       - db.m6g.xlarge

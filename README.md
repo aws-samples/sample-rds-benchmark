@@ -90,7 +90,7 @@ aws cloudformation delete-stack --stack-name rds-bench-m9g --region us-east-1
 | Parameter | Description | Default | Allowed Values |
 |-----------|-------------|---------|----------------|
 | `DatabaseEngine` | Database engine to benchmark | `postgres` | `postgres`, `mysql`, `mariadb` |
-| `InstanceClass` | RDS instance class | `db.m8g.xlarge` | See template for full list |
+| `InstanceClass` | RDS instance class | `db.m9g.xlarge` | See template for full list |
 | `SysbenchTables` | Number of tables | `2` | 1-64 |
 | `SysbenchTableSize` | Rows per table | `2000000` | 10000+ |
 | `SysbenchThreads` | Concurrent threads | `100` | 1-512 |
@@ -140,17 +140,19 @@ No template restructuring needed.
 
 ## Cost
 
-**Warning:** This stack costs approximately **$2.17/hour ($52/day)** while running. Delete the stack immediately after collecting benchmark results.
+**Warning:** This stack costs approximately **$2.51/hour (~$60/day)** while running. Delete the stack immediately after collecting benchmark results.
 
 | Resource | Hourly Cost (us-east-1) |
 |----------|------------------------|
-| RDS instance (db.m8g.xlarge) | $0.58 |
-| io2 200 GiB + 10,000 IOPS | $0.92 |
-| EC2 m7g.4xlarge | $0.58 |
-| NAT Gateway | $0.045 |
-| VPC Endpoints (x4) | $0.04 |
+| RDS instance (db.m9g.xlarge, Single-AZ, PostgreSQL) | $0.366 |
+| RDS io2 storage (200 GiB) | $0.034 |
+| RDS io2 provisioned IOPS (10,000) | $1.370 |
+| EC2 client (m7g.4xlarge, Linux) | $0.653 |
+| NAT Gateway (hourly) | $0.045 |
+| VPC endpoints (x4 interface) | $0.040 |
+| **Total** | **~$2.51/hour** |
 
-Costs vary by instance class. Run `aws cloudformation delete-stack` as soon as you have your results.
+Prices are On-Demand list pricing in us-east-1 as of August 2026 and exclude usage-based data-processing (NAT/endpoint/RDS) charges. The 10,000 provisioned io2 IOPS is the largest single line item. Costs vary by instance class and Region. Run `aws cloudformation delete-stack` as soon as you have your results.
 
 ## License
 
